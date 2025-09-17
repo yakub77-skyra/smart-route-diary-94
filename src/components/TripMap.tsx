@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { MapPin, Navigation, Layers } from 'lucide-react';
+import { MapPin, Navigation, Layers, AlertCircle } from 'lucide-react';
 import { DetectedTrip } from '@/services/tripDetection';
 
 interface TripMapProps {
@@ -23,42 +23,46 @@ export const TripMap: React.FC<TripMapProps> = ({
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
-  const [mapStyle, setMapStyle] = useState('https://demotiles.maplibre.org/style.json');
+  const [mapStyle, setMapStyle] = useState<'street' | 'satellite' | 'terrain'>('street');
   const [isOffline, setIsOffline] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
 
-  // Map styles for different layers
-  const mapStyles = {
-    street: 'https://demotiles.maplibre.org/style.json',
-    satellite: 'https://api.maptiler.com/maps/satellite/style.json?key=demo', // Demo key
-    terrain: 'https://api.maptiler.com/maps/terrain/style.json?key=demo'
+  // Create OpenStreetMap-based styles
+  const createMapStyle = (styleType: 'street' | 'satellite' | 'terrain') => {
+    const baseStyle = {
+      version: 8 as const,
+      sources: {
+        'osm': {
+          type: 'raster' as const,
+          tiles: styleType === 'street' 
+            ? ['https://tile.openstreetmap.org/{z}/{x}/{y}.png']
+            : styleType === 'satellite'
+            ? ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}']
+            : ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: styleType === 'street'
+            ? '© OpenStreetMap contributors'
+            : styleType === 'satellite'
+            ? '© Esri, USGS, NOAA'
+            : '© OpenTopoMap (CC-BY-SA)'
+        }
+      },
+      layers: [
+        {
+          id: 'osm',
+          type: 'raster' as const,
+          source: 'osm',
+          minzoom: 0,
+          maxzoom: 22
+        }
+      ]
+    };
+    return baseStyle;
   };
 
   useEffect(() => {
     if (!mapContainer.current) return;
-
-    // Initialize map
-    map.current = new maplibregl.Map({
-      container: mapContainer.current,
-      style: mapStyle,
-      center: currentLocation 
-        ? [currentLocation.coords.longitude, currentLocation.coords.latitude]
-        : [0, 0],
-      zoom: 10,
-      attributionControl: false
-    });
-
-    // Add navigation controls
-    map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
-
-    // Add geolocate control for user location
-    const geolocate = new maplibregl.GeolocateControl({
-      positionOptions: {
-        enableHighAccuracy: true
-      },
-      trackUserLocation: true
-    });
-    map.current.addControl(geolocate);
 
     // Handle offline detection
     const handleOnline = () => setIsOffline(false);
@@ -67,33 +71,92 @@ export const TripMap: React.FC<TripMapProps> = ({
     window.addEventListener('offline', handleOffline);
     setIsOffline(!navigator.onLine);
 
-    // Map click handler for adding trip markers
-    map.current.on('click', (e) => {
-      const { lng, lat } = e.lngLat;
-      
-      // Simple logic: first click starts trip, second click ends trip
-      const existingMarkers = markersRef.current.filter(marker => 
-        marker.getElement().classList.contains('trip-marker')
-      );
-      
-      if (existingMarkers.length === 0) {
-        // Start trip
-        onTripStart?.({ lat, lng });
-        addTripMarker(lng, lat, 'start');
-      } else if (existingMarkers.length === 1) {
-        // End trip
-        onTripEnd?.({ lat, lng });
-        addTripMarker(lng, lat, 'end');
-        
-        // Draw route line between markers
-        const startMarker = existingMarkers[0];
-        const startLngLat = startMarker.getLngLat();
-        drawRouteLine([startLngLat.lng, startLngLat.lat], [lng, lat]);
-      }
-    });
+    try {
+      // Initialize map with OpenStreetMap style
+      map.current = new maplibregl.Map({
+        container: mapContainer.current,
+        style: createMapStyle(mapStyle),
+        center: currentLocation 
+          ? [currentLocation.coords.longitude, currentLocation.coords.latitude]
+          : [-74.5, 40], // Default to New York area
+        zoom: currentLocation ? 15 : 10,
+        attributionControl: false
+      });
 
-    // Load existing trips
-    loadTripsOnMap();
+      // Clear any previous location errors
+      setLocationError(null);
+
+      // Add navigation controls
+      map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+      // Add attribution control with custom options
+      map.current.addControl(new maplibregl.AttributionControl({
+        compact: true
+      }), 'bottom-right');
+
+      // Add geolocate control for user location
+      const geolocate = new maplibregl.GeolocateControl({
+        positionOptions: {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000
+        },
+        trackUserLocation: true
+      });
+
+      // Handle geolocation events
+      geolocate.on('error', (e) => {
+        console.error('Geolocation error:', e);
+        setLocationError('Location access denied or unavailable');
+      });
+
+      geolocate.on('geolocate', (position) => {
+        setLocationError(null);
+      });
+
+      map.current.addControl(geolocate, 'top-right');
+
+      // Map click handler for adding trip markers
+      map.current.on('click', (e) => {
+        const { lng, lat } = e.lngLat;
+        
+        // Simple logic: first click starts trip, second click ends trip
+        const existingMarkers = markersRef.current.filter(marker => 
+          marker.getElement().classList.contains('trip-marker')
+        );
+        
+        if (existingMarkers.length === 0) {
+          // Start trip
+          onTripStart?.({ lat, lng });
+          addTripMarker(lng, lat, 'start');
+        } else if (existingMarkers.length === 1) {
+          // End trip
+          onTripEnd?.({ lat, lng });
+          addTripMarker(lng, lat, 'end');
+          
+          // Draw route line between markers
+          const startMarker = existingMarkers[0];
+          const startLngLat = startMarker.getLngLat();
+          drawRouteLine([startLngLat.lng, startLngLat.lat], [lng, lat]);
+        }
+      });
+
+      // Load existing trips
+      loadTripsOnMap();
+
+      // Trigger initial location if user location is available
+      if (currentLocation) {
+        map.current.flyTo({
+          center: [currentLocation.coords.longitude, currentLocation.coords.latitude],
+          zoom: 15,
+          duration: 2000
+        });
+      }
+
+    } catch (error) {
+      console.error('Map initialization error:', error);
+      setLocationError('Failed to initialize map');
+    }
 
     // Cleanup
     return () => {
@@ -279,8 +342,16 @@ export const TripMap: React.FC<TripMapProps> = ({
     }
   };
 
-  const switchMapStyle = (style: keyof typeof mapStyles) => {
-    setMapStyle(mapStyles[style]);
+  const switchMapStyle = (style: 'street' | 'satellite' | 'terrain') => {
+    if (map.current) {
+      map.current.setStyle(createMapStyle(style));
+      setMapStyle(style);
+      
+      // Re-add trip data after style change
+      setTimeout(() => {
+        loadTripsOnMap();
+      }, 1000);
+    }
   };
 
   return (
@@ -288,9 +359,17 @@ export const TripMap: React.FC<TripMapProps> = ({
       {/* Map Container */}
       <div 
         ref={mapContainer} 
-        className="w-full h-full min-h-[400px]"
+        className="w-full h-full min-h-[400px] bg-muted/20"
         style={{ borderRadius: 'inherit' }}
       />
+      
+      {/* Location Error */}
+      {locationError && (
+        <div className="absolute top-4 left-4 bg-destructive text-destructive-foreground px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 shadow-lg">
+          <AlertCircle className="w-4 h-4" />
+          {locationError}
+        </div>
+      )}
       
       {/* Offline Indicator */}
       {isOffline && (
@@ -305,7 +384,7 @@ export const TripMap: React.FC<TripMapProps> = ({
         <div className="bg-background/90 backdrop-blur-sm rounded-lg p-2 shadow-lg">
           <div className="flex flex-col gap-1">
             <Button
-              variant="ghost"
+              variant={mapStyle === 'street' ? 'default' : 'ghost'}
               size="sm"
               onClick={() => switchMapStyle('street')}
               className="justify-start text-xs"
@@ -314,7 +393,7 @@ export const TripMap: React.FC<TripMapProps> = ({
               Street
             </Button>
             <Button
-              variant="ghost"
+              variant={mapStyle === 'satellite' ? 'default' : 'ghost'}
               size="sm"
               onClick={() => switchMapStyle('satellite')}
               className="justify-start text-xs"
@@ -323,7 +402,7 @@ export const TripMap: React.FC<TripMapProps> = ({
               Satellite
             </Button>
             <Button
-              variant="ghost"
+              variant={mapStyle === 'terrain' ? 'default' : 'ghost'}
               size="sm"
               onClick={() => switchMapStyle('terrain')}
               className="justify-start text-xs"
