@@ -6,13 +6,16 @@ import { Card } from "@/components/ui/card";
 import StatsCard from "@/components/StatsCard";
 import TripCard from "@/components/TripCard";
 import TripDetectionToggle from "@/components/TripDetectionToggle";
+import TripMap from "@/components/TripMap";
 import { Trip, TransportMode, TripPurpose, Companion } from "@/types/trip";
 import { useTripDetection } from "@/hooks/useTripDetection";
+import { useGeolocation } from "@/hooks/useGeolocation";
 import { supabase } from "@/integrations/supabase/client";
 
 const Home = () => {
   const navigate = useNavigate();
   const { isTracking, currentLocation, startTracking, stopTracking, confirmationModal } = useTripDetection();
+  const { location: userLocation } = useGeolocation();
   const [todayTrips, setTodayTrips] = useState<Trip[]>([]);
   const [weekStats, setWeekStats] = useState({
     totalDistance: 0,
@@ -215,7 +218,7 @@ const Home = () => {
         </div>
 
         {/* Carbon Saved Widget */}
-        <Card className="p-4 bg-gradient-card mb-20">
+        <Card className="p-4 bg-gradient-card mb-6">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground mb-1">Carbon Saved</p>
@@ -225,7 +228,42 @@ const Home = () => {
             <div className="text-5xl">🌍</div>
           </div>
         </Card>
+
+        {/* Interactive Map */}
+        <div className="mb-20">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Trip Map</h2>
+            <TripDetectionToggle 
+              isTracking={isTracking}
+              onToggle={handleToggleTracking}
+            />
+          </div>
+          <TripMap 
+            trips={todayTrips
+              .filter(trip => trip.origin.coordinates && trip.destination.coordinates)
+              .map(trip => ({
+                origin: {
+                  name: trip.origin.name,
+                  coordinates: trip.origin.coordinates!
+                },
+                destination: {
+                  name: trip.destination.name,
+                  coordinates: trip.destination.coordinates!
+                },
+                startTime: trip.startTime,
+                endTime: trip.endTime,
+                distance: trip.distance,
+                mode: trip.mode,
+                path: [] // Add path data if available in your trip data
+              }))}
+            currentLocation={userLocation || currentLocation}
+            className="h-80"
+          />
+        </div>
       </div>
+
+      {/* Trip Confirmation Modal */}
+      {confirmationModal}
     </div>
   );
 };
